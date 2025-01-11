@@ -1,0 +1,9 @@
+﻿services:
+  # https://learn.microsoft.com/en-us/dotnet/aspire/fundamentals/dashboard/standalone
+  aspire-dashboard:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:9.0
+    environment:
+      - DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=true
+    ports:
+      - "4317:18889"
+      - "18888:18888"
