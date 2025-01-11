@@ -1,0 +1,6 @@
+@OpenTelemetryPoc_HostAddress = http://localhost:5092
+
+GET {{OpenTelemetryPoc_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
