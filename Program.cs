@@ -5,14 +5,16 @@ using OpenTelemetry.Logs;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using OpenTelemetryPoc;
+using Refit;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
 builder.Services.AddDbContext<AuditContext>();
+
+builder.Services.AddRefitClient<ICodexApi>()
+    .ConfigureHttpClient(x => x.BaseAddress = new Uri("https://codex.opendata.api.vlaanderen.be:443/api"));
 
 builder.Services.AddSingleton(new DiagnosticsConfig());
 
@@ -29,6 +31,7 @@ builder.Services.AddOpenTelemetry()
         .AddSource(DiagnosticsConfig.SourceName)
         .AddAspNetCoreInstrumentation()
         .AddEntityFrameworkCoreInstrumentation()
+        .AddHttpClientInstrumentation()
         .AddOtlpExporter())
     .WithLogging(logging => logging
         .AddOtlpExporter());
@@ -101,6 +104,14 @@ app.MapGet("/weatherforecast", async (
         return TypedResults.Ok(forecast);
     })
     .WithName("GetWeatherForecast");
+
+app.MapGet("/thema/{id:int}", async (
+    [FromRoute] int id, 
+    [FromServices] ICodexApi codexApi) =>
+{
+    var thema = await codexApi.GetThema(id);
+    return TypedResults.Ok(thema);
+}).WithName("GetThemaById");
 
 app.Run();
 
