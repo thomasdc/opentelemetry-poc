@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using Microsoft.AspNetCore.Mvc;
+using OpenTelemetry.Logs;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
@@ -19,6 +21,8 @@ builder.Services.AddOpenTelemetry()
         }))
     .WithTracing(tracing => tracing
         .AddAspNetCoreInstrumentation()
+        .AddOtlpExporter())
+    .WithLogging(logging => logging
         .AddOtlpExporter());
 
 var app = builder.Build();
@@ -49,7 +53,7 @@ app.Use((context, next) =>
     }
 });
 
-app.MapGet("/weatherforecast", (bool shouldError = false) =>
+app.MapGet("/weatherforecast", ([FromServices] ILogger<Program> logger, bool shouldError = false) =>
     {
         var forecast = Enumerable.Range(1, 5).Select(index =>
                 new WeatherForecast
@@ -59,7 +63,8 @@ app.MapGet("/weatherforecast", (bool shouldError = false) =>
                     summaries[Random.Shared.Next(summaries.Length)]
                 ))
             .ToArray();
-        Activity.Current?.AddEvent(new ActivityEvent("Weather forecast requested"));
+        Activity.Current?.AddEvent(new ActivityEvent("Weather forecast requested (as span/activity event)"));
+        logger.WeatherForecastRequested(shouldError);
         if (shouldError)
         {
             var x = 1 / int.Parse("0");
@@ -75,4 +80,10 @@ app.Run();
 record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
 {
     public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
+}
+
+internal static partial class LoggerExtensions
+{
+    [LoggerMessage(LogLevel.Information, "Weather forecast requested (as log event) should error: `{ShouldError}`")]
+    public static partial void WeatherForecastRequested(this ILogger logger, bool shouldError);
 }
