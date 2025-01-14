@@ -1,13 +1,27 @@
 using System.Diagnostics;
 using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Mvc;
-using OpenTelemetry.Logs;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using OpenTelemetryPoc;
 using Refit;
+using Serilog;
+using ILogger = Microsoft.Extensions.Logging.ILogger;
+
+Log.Logger = new LoggerConfiguration()
+    .WriteTo.Console()
+    .WriteTo.OpenTelemetry(options =>
+    {
+        options.ResourceAttributes = new Dictionary<string, object>
+        {
+            ["service.name"] = "OpenTelemetryPoc"
+        };
+    })
+    .CreateLogger();
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddSerilog();
 
 builder.Services.AddOpenApi();
 
@@ -32,8 +46,6 @@ builder.Services.AddOpenTelemetry()
         .AddAspNetCoreInstrumentation()
         .AddEntityFrameworkCoreInstrumentation()
         .AddHttpClientInstrumentation()
-        .AddOtlpExporter())
-    .WithLogging(logging => logging
         .AddOtlpExporter());
 
 var app = builder.Build();
@@ -79,6 +91,7 @@ app.MapGet("/weatherforecast", async (
                     summaries[Random.Shared.Next(summaries.Length)]
                 ))
             .ToArray();
+        Log.ForContext<Program>().Information("This log line is from {Source}", "Serilog");
         Activity.Current?.AddEvent(new ActivityEvent("Weather forecast requested (as span/activity event)"));
         logger.WeatherForecastRequested(shouldError);
         if (shouldError)
