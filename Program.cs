@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using OpenTelemetryPoc;
@@ -25,7 +26,8 @@ builder.Services.AddSerilog();
 
 builder.Services.AddOpenApi();
 
-builder.Services.AddDbContext<AuditContext>();
+builder.Services.AddDbContext<AuditContext>(opt =>
+    opt.UseNpgsql("host=localhost;user id=postgres;password=secret;database=OpenTelemetryPoc"));
 
 builder.Services.AddRefitClient<ICodexApi>()
     .ConfigureHttpClient(x => x.BaseAddress = new Uri("https://codex.opendata.api.vlaanderen.be:443/api"));
@@ -49,6 +51,13 @@ builder.Services.AddOpenTelemetry()
         .AddOtlpExporter());
 
 var app = builder.Build();
+
+using (var scope = app.Services.CreateScope())
+{
+    var database = scope.ServiceProvider.GetRequiredService<AuditContext>().Database;
+    database.EnsureDeleted();
+    database.EnsureCreated();    
+}
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())

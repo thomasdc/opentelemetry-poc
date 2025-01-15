@@ -7,3 +7,14 @@
     ports:
       - "4317:18889"
       - "18888:18888"
+  postgres:
+    image: postgres:17
+    environment:
+      - "POSTGRES_PASSWORD=secret"
+    ports:
+      - "5432:5432"
+  rabbitmq:
+    image: masstransit/rabbitmq:latest
+    ports:
+      - "5672:5672"
+      - "15672:15672"
