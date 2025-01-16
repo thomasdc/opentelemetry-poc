@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using Hangfire;
+using Hangfire.PostgreSql;
 using MassTransit;
 using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Mvc;
@@ -8,9 +10,14 @@ using OpenTelemetry.Trace;
 using OpenTelemetryPoc;
 using Refit;
 using Serilog;
+using Serilog.Events;
 using ILogger = Microsoft.Extensions.Logging.ILogger;
 
 Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Override("Microsoft.AspNetCore.Hosting", LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.AspNetCore.Mvc", LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.AspNetCore.Routing", LogEventLevel.Warning)
+    .Filter.ByExcluding("RequestPath like '/hangfire%'")
     .WriteTo.Console()
     .WriteTo.OpenTelemetry(options =>
     {
@@ -21,144 +28,178 @@ Log.Logger = new LoggerConfiguration()
     })
     .CreateLogger();
 
-var builder = WebApplication.CreateBuilder(args);
-
-builder.Services.AddSerilog();
-
-builder.Services.AddOpenApi();
-
-builder.Services.AddMassTransit(x =>
+try
 {
-    x.AddConsumer<SomeMessageConsumer>();
-    x.UsingRabbitMq((context, cfg) =>
+    Log.Information("Starting web application");
+
+    var builder = WebApplication.CreateBuilder(args);
+
+    builder.Services.AddSerilog();
+
+    builder.Services.AddOpenApi();
+
+    builder.Services.AddHangfire(config =>
     {
-        cfg.ConfigureEndpoints(context);
-        cfg.Host("localhost", 5673, "/", h =>
-        { 
-            h.Username("guest");
-            h.Password("guest");
+        config.UseRecommendedSerializerSettings();
+        config.UsePostgreSqlStorage(c =>
+        {
+            c.UseNpgsqlConnection("host=localhost;port=5433;user id=postgres;password=secret;database=OpenTelemetryPoc");
         });
     });
-});
 
-builder.Services.AddDbContext<AuditContext>(opt =>
-    opt.UseNpgsql("host=localhost;port=5433;user id=postgres;password=secret;database=OpenTelemetryPoc"));
+    builder.Services.AddHangfireServer();
 
-builder.Services.AddRefitClient<ICodexApi>()
-    .ConfigureHttpClient(x => x.BaseAddress = new Uri("https://codex.opendata.api.vlaanderen.be:443/api"));
-
-builder.Services.AddSingleton(new DiagnosticsConfig());
-
-// https://github.com/open-telemetry/opentelemetry-dotnet
-builder.Services.AddOpenTelemetry()
-    .ConfigureResource(resource => resource
-        .AddService("OpenTelemetryPoc")
-        .AddAttributes(new List<KeyValuePair<string, object>>
-        {
-            new("Startup", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")),
-            new("AppVersion", "0.1.42")
-        }))
-    .WithTracing(tracing => tracing
-        .AddSource(DiagnosticsConfig.SourceName)
-        .AddSource(MassTransit.Logging.DiagnosticHeaders.DefaultListenerName)
-        .AddAspNetCoreInstrumentation()
-        .AddEntityFrameworkCoreInstrumentation()
-        .AddHttpClientInstrumentation()
-        .AddOtlpExporter());
-
-var app = builder.Build();
-
-using (var scope = app.Services.CreateScope())
-{
-    var database = scope.ServiceProvider.GetRequiredService<AuditContext>().Database;
-    database.EnsureDeleted();
-    database.EnsureCreated();    
-}
-
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
-{
-    app.MapOpenApi();
-}
-
-app.UseHttpsRedirection();
-
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.Use((context, next) =>
-{
-    try
+    builder.Services.AddMassTransit(x =>
     {
-        return next(context);
-    }
-    catch (Exception e)
-    {
-        Activity.Current?.AddException(e);
-        throw;
-    }
-});
-
-app.MapGet("/weatherforecast", async (
-        [FromServices] ILogger<Program> logger, 
-        [FromServices] AuditContext auditContext, 
-        [FromServices] DiagnosticsConfig diagnosticsConfig,
-        [FromServices] IPublishEndpoint publishEndpoint,
-        HttpContext httpContext,
-        bool shouldError = false) =>
-    {
-        var forecast = Enumerable.Range(1, 5).Select(index =>
-                new WeatherForecast
-                (
-                    DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-                    Random.Shared.Next(-20, 55),
-                    summaries[Random.Shared.Next(summaries.Length)]
-                ))
-            .ToArray();
-        Log.ForContext<Program>().Information("This log line is from {Source}", "Serilog");
-        Activity.Current?.AddEvent(new ActivityEvent("Weather forecast requested (as span/activity event)"));
-        logger.WeatherForecastRequested(shouldError);
-        if (shouldError)
+        x.AddConsumer<SomeMessageConsumer>();
+        x.UsingRabbitMq((context, cfg) =>
         {
-            var x = 1 / int.Parse("0");
-        }
-
-        using (var span = diagnosticsConfig.Source.StartActivity("Audit logging"))
-        {
-            logger.LogInformation("Saving to audit log...");
-            var auditEntry = new AuditEntry
-            {
-                RawUrl = httpContext.Request.GetEncodedPathAndQuery(),
-                IpAddress = httpContext.Connection.RemoteIpAddress?.ToString() ?? "(unknown)",
-                Method = httpContext.Request.Method
-            };
-            await auditContext.AddAsync(auditEntry);
-            await auditContext.SaveChangesAsync();
-            span?.SetTag(DiagnosticsNames.AuditEntryId, auditEntry.Id);
-        }
-
-        await publishEndpoint.Publish<SomeMessage>(new()
-        {
-            MaxTemperatureDate = forecast.MaxBy(_ => _.TemperatureC)!.Date,
-            MaxTemperature = forecast.Max(_ => _.TemperatureC)
+            cfg.ConfigureEndpoints(context);
+            cfg.Host("localhost", 5673, "/", h =>
+            { 
+                h.Username("guest");
+                h.Password("guest");
+            });
         });
-        
-        Activity.Current?.SetStatus(ActivityStatusCode.Ok);
-        return TypedResults.Ok(forecast);
-    })
-    .WithName("GetWeatherForecast");
+    });
 
-app.MapGet("/thema/{id:int}", async (
-    [FromRoute] int id, 
-    [FromServices] ICodexApi codexApi) =>
+    builder.Services.AddDbContext<AuditContext>(opt =>
+        opt.UseNpgsql("host=localhost;port=5433;user id=postgres;password=secret;database=OpenTelemetryPoc"));
+
+    builder.Services.AddRefitClient<ICodexApi>()
+        .ConfigureHttpClient(x => x.BaseAddress = new Uri("https://codex.opendata.api.vlaanderen.be:443/api"));
+
+    builder.Services.AddSingleton(new DiagnosticsConfig());
+
+    // https://github.com/open-telemetry/opentelemetry-dotnet
+    builder.Services.AddOpenTelemetry()
+        .ConfigureResource(resource => resource
+            .AddService("OpenTelemetryPoc")
+            .AddAttributes(new List<KeyValuePair<string, object>>
+            {
+                new("Startup", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")),
+                new("AppVersion", "0.1.42")
+            }))
+        .WithTracing(tracing => tracing
+            .AddSource(DiagnosticsConfig.SourceName)
+            .AddSource(MassTransit.Logging.DiagnosticHeaders.DefaultListenerName)
+            .AddAspNetCoreInstrumentation(options =>
+            {
+                options.Filter = context => !context.Request.Path.StartsWithSegments("/hangfire");
+            })
+            .AddHangfireInstrumentation()
+            .AddEntityFrameworkCoreInstrumentation()
+            .AddHttpClientInstrumentation()
+            .AddOtlpExporter());
+
+    var app = builder.Build();
+
+    using (var scope = app.Services.CreateScope())
+    {
+        var database = scope.ServiceProvider.GetRequiredService<AuditContext>().Database;
+        database.EnsureDeleted();
+        database.EnsureCreated();    
+    }
+
+    var recurringJobManager = app.Services.GetRequiredService<IRecurringJobManagerV2>();
+    recurringJobManager.AddOrUpdate<SomeRecurringJob>("some-recurring-job", x => x.Execute(), Cron.Minutely);
+
+    // Configure the HTTP request pipeline.
+    app.UseSerilogRequestLogging();
+    if (app.Environment.IsDevelopment())
+    {
+        app.MapOpenApi();
+    }
+
+    app.UseHttpsRedirection();
+
+    var summaries = new[]
+    {
+        "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
+    };
+
+    app.UseHangfireDashboard();
+
+    app.Use((context, next) =>
+    {
+        try
+        {
+            return next(context);
+        }
+        catch (Exception e)
+        {
+            Activity.Current?.AddException(e);
+            throw;
+        }
+    });
+
+    app.MapGet("/weatherforecast", async (
+            [FromServices] ILogger<Program> logger, 
+            [FromServices] AuditContext auditContext, 
+            [FromServices] DiagnosticsConfig diagnosticsConfig,
+            [FromServices] IPublishEndpoint publishEndpoint,
+            HttpContext httpContext,
+            bool shouldError = false) =>
+        {
+            var forecast = Enumerable.Range(1, 5).Select(index =>
+                    new WeatherForecast
+                    (
+                        DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
+                        Random.Shared.Next(-20, 55),
+                        summaries[Random.Shared.Next(summaries.Length)]
+                    ))
+                .ToArray();
+            Log.ForContext<Program>().Information("This log line is from {Source}", "Serilog");
+            Activity.Current?.AddEvent(new ActivityEvent("Weather forecast requested (as span/activity event)"));
+            logger.WeatherForecastRequested(shouldError);
+            if (shouldError)
+            {
+                var x = 1 / int.Parse("0");
+            }
+
+            using (var span = diagnosticsConfig.Source.StartActivity("Audit logging"))
+            {
+                logger.LogInformation("Saving to audit log...");
+                var auditEntry = new AuditEntry
+                {
+                    RawUrl = httpContext.Request.GetEncodedPathAndQuery(),
+                    IpAddress = httpContext.Connection.RemoteIpAddress?.ToString() ?? "(unknown)",
+                    Method = httpContext.Request.Method
+                };
+                await auditContext.AddAsync(auditEntry);
+                await auditContext.SaveChangesAsync();
+                span?.SetTag(DiagnosticsNames.AuditEntryId, auditEntry.Id);
+            }
+
+            await publishEndpoint.Publish<SomeMessage>(new()
+            {
+                MaxTemperatureDate = forecast.MaxBy(_ => _.TemperatureC)!.Date,
+                MaxTemperature = forecast.Max(_ => _.TemperatureC)
+            });
+            
+            Activity.Current?.SetStatus(ActivityStatusCode.Ok);
+            return TypedResults.Ok(forecast);
+        })
+        .WithName("GetWeatherForecast");
+
+    app.MapGet("/thema/{id:int}", async (
+        [FromRoute] int id, 
+        [FromServices] ICodexApi codexApi) =>
+    {
+        var thema = await codexApi.GetThema(id);
+        return TypedResults.Ok(thema);
+    }).WithName("GetThemaById");
+
+    app.Run();
+}
+catch (Exception ex)
 {
-    var thema = await codexApi.GetThema(id);
-    return TypedResults.Ok(thema);
-}).WithName("GetThemaById");
-
-app.Run();
+    Log.Fatal(ex, "Application terminated unexpectedly");
+}
+finally
+{
+    Log.CloseAndFlush();
+}
 
 record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
 {
