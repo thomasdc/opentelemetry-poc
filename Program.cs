@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using MassTransit;
 using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -26,8 +27,22 @@ builder.Services.AddSerilog();
 
 builder.Services.AddOpenApi();
 
+builder.Services.AddMassTransit(x =>
+{
+    x.AddConsumer<SomeMessageConsumer>();
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        cfg.ConfigureEndpoints(context);
+        cfg.Host("localhost", 5673, "/", h =>
+        { 
+            h.Username("guest");
+            h.Password("guest");
+        });
+    });
+});
+
 builder.Services.AddDbContext<AuditContext>(opt =>
-    opt.UseNpgsql("host=localhost;user id=postgres;password=secret;database=OpenTelemetryPoc"));
+    opt.UseNpgsql("host=localhost;port=5433;user id=postgres;password=secret;database=OpenTelemetryPoc"));
 
 builder.Services.AddRefitClient<ICodexApi>()
     .ConfigureHttpClient(x => x.BaseAddress = new Uri("https://codex.opendata.api.vlaanderen.be:443/api"));
@@ -45,6 +60,7 @@ builder.Services.AddOpenTelemetry()
         }))
     .WithTracing(tracing => tracing
         .AddSource(DiagnosticsConfig.SourceName)
+        .AddSource(MassTransit.Logging.DiagnosticHeaders.DefaultListenerName)
         .AddAspNetCoreInstrumentation()
         .AddEntityFrameworkCoreInstrumentation()
         .AddHttpClientInstrumentation()
@@ -89,6 +105,7 @@ app.MapGet("/weatherforecast", async (
         [FromServices] ILogger<Program> logger, 
         [FromServices] AuditContext auditContext, 
         [FromServices] DiagnosticsConfig diagnosticsConfig,
+        [FromServices] IPublishEndpoint publishEndpoint,
         HttpContext httpContext,
         bool shouldError = false) =>
     {
@@ -121,6 +138,12 @@ app.MapGet("/weatherforecast", async (
             await auditContext.SaveChangesAsync();
             span?.SetTag(DiagnosticsNames.AuditEntryId, auditEntry.Id);
         }
+
+        await publishEndpoint.Publish<SomeMessage>(new()
+        {
+            MaxTemperatureDate = forecast.MaxBy(_ => _.TemperatureC)!.Date,
+            MaxTemperature = forecast.Max(_ => _.TemperatureC)
+        });
         
         Activity.Current?.SetStatus(ActivityStatusCode.Ok);
         return TypedResults.Ok(forecast);

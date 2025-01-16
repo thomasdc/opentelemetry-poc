@@ -12,9 +12,9 @@
     environment:
       - "POSTGRES_PASSWORD=secret"
     ports:
-      - "5432:5432"
+      - "5433:5432"
   rabbitmq:
     image: masstransit/rabbitmq:latest
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "5673:5672"
+      - "15673:15672"
