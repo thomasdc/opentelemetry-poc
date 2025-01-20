@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Hangfire;
 using Hangfire.PostgreSql;
 using MassTransit;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -18,6 +19,7 @@ Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Override("Microsoft.AspNetCore.Mvc", LogEventLevel.Warning)
     .MinimumLevel.Override("Microsoft.AspNetCore.Routing", LogEventLevel.Warning)
     .Filter.ByExcluding("RequestPath like '/hangfire%'")
+    .Filter.ByExcluding("RequestPath like '/health%'")
     .WriteTo.Console()
     .WriteTo.OpenTelemetry(options =>
     {
@@ -36,6 +38,9 @@ try
 
     builder.Services.AddSerilog();
 
+    builder.Services.AddHealthChecks()
+        .AddDbContextCheck<AuditContext>();
+
     builder.Services.AddOpenApi();
 
     builder.Services.AddHangfire(config =>
@@ -43,7 +48,8 @@ try
         config.UseRecommendedSerializerSettings();
         config.UsePostgreSqlStorage(c =>
         {
-            c.UseNpgsqlConnection("host=localhost;port=5433;user id=postgres;password=secret;database=OpenTelemetryPoc");
+            c.UseNpgsqlConnection(
+                "host=localhost;port=5433;user id=postgres;password=secret;database=OpenTelemetryPoc");
         });
     });
 
@@ -70,6 +76,8 @@ try
         .ConfigureHttpClient(x => x.BaseAddress = new Uri("https://codex.opendata.api.vlaanderen.be:443/api"));
 
     builder.Services.AddSingleton(new DiagnosticsConfig());
+    
+    var appVersion = typeof(Program).Assembly.GetName().Version!;
 
     // https://github.com/open-telemetry/opentelemetry-dotnet
     builder.Services.AddOpenTelemetry()
@@ -78,14 +86,16 @@ try
             .AddAttributes(new List<KeyValuePair<string, object>>
             {
                 new("Startup", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")),
-                new("AppVersion", "0.1.42")
+                new("AppVersion", $"{appVersion.Major}.{appVersion.Minor}.{appVersion.Build}")
             }))
         .WithTracing(tracing => tracing
             .AddSource(DiagnosticsConfig.SourceName)
             .AddSource(MassTransit.Logging.DiagnosticHeaders.DefaultListenerName)
             .AddAspNetCoreInstrumentation(options =>
             {
-                options.Filter = context => !context.Request.Path.StartsWithSegments("/hangfire");
+                options.Filter = context => 
+                    !context.Request.Path.StartsWithSegments("/hangfire") && 
+                    !context.Request.Path.StartsWithSegments("/health");
             })
             .AddHangfireInstrumentation()
             .AddEntityFrameworkCoreInstrumentation()
@@ -110,14 +120,11 @@ try
     {
         app.MapOpenApi();
     }
-
+    
     app.UseHttpsRedirection();
 
-    var summaries = new[]
-    {
-        "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-    };
-
+    app.MapHealthChecks("/health");
+    
     app.UseHangfireDashboard();
 
     app.Use((context, next) =>
@@ -141,6 +148,11 @@ try
             HttpContext httpContext,
             bool shouldError = false) =>
         {
+            var summaries = new[]
+            {
+                "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
+            };
+            
             var forecast = Enumerable.Range(1, 5).Select(index =>
                     new WeatherForecast
                     (
