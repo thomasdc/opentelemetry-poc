@@ -12,6 +12,7 @@ using OpenTelemetryPoc;
 using Refit;
 using Serilog;
 using Serilog.Events;
+using SolrNet;
 using ILogger = Microsoft.Extensions.Logging.ILogger;
 
 Log.Logger = new LoggerConfiguration()
@@ -68,6 +69,8 @@ try
             });
         });
     });
+
+    builder.Services.AddSolrNet("http://localhost:8988/solr/gettingstarted");
 
     builder.Services.AddDbContext<AuditContext>(opt =>
         opt.UseNpgsql("host=localhost;port=5433;user id=postgres;password=secret;database=OpenTelemetryPoc"));
@@ -145,6 +148,7 @@ try
             [FromServices] AuditContext auditContext, 
             [FromServices] DiagnosticsConfig diagnosticsConfig,
             [FromServices] IPublishEndpoint publishEndpoint,
+            [FromServices] ISolrBasicReadOnlyOperations<Dictionary<string, object>> solr,
             HttpContext httpContext,
             bool shouldError = false) =>
         {
@@ -188,6 +192,9 @@ try
                 MaxTemperatureDate = forecast.MaxBy(_ => _.TemperatureC)!.Date,
                 MaxTemperature = forecast.Max(_ => _.TemperatureC)
             });
+
+            var solrResponse = await solr.PingAsync();
+            logger.LogInformation("Got a response from Solr in {ResponseTime}ms", solrResponse.QTime);
             
             Activity.Current?.SetStatus(ActivityStatusCode.Ok);
             return TypedResults.Ok(forecast);
